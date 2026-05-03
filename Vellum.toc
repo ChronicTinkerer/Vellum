@@ -13,3 +13,4 @@ Core.lua
 Locator.lua
 Follower.lua
 Arrow.lua
+Window.lua
