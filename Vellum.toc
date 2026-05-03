@@ -4,9 +4,8 @@
 ## Author: ChronicTinkerer
 ## Version: 0.1.0-dev
 ## SavedVariables: VellumDB
-## SavedVariablesPerCharacter: VellumCharDB
-## Dependencies: LibCodex
-## OptionalDeps: Cairn, TomTom
+## Dependencies: LibCodex, Cairn
+## OptionalDeps: TomTom
 ## X-Category: Quest
 ## X-License: MIT
 
