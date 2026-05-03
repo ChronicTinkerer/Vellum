@@ -4,9 +4,12 @@
 ## Author: ChronicTinkerer
 ## Version: 0.1.0-dev
 ## SavedVariables: VellumDB
-## Dependencies: LibCodex, Cairn
+## Dependencies: LibCodex-1.0, Cairn
 ## OptionalDeps: TomTom
 ## X-Category: Quest
 ## X-License: MIT
 
 Core.lua
+Locator.lua
+Follower.lua
+Arrow.lua

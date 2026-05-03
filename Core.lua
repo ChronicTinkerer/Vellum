@@ -1,6 +1,6 @@
 -- Vellum: a leveling guide built on LibCodex.
 -- Phase 0 stub: confirms wiring (Cairn.Addon, Cairn.Slash, Cairn.DB, Cairn.Log).
--- No guide engine yet; that's the next session.
+-- The follower engine, locator, arrow, and window land in subsequent phases.
 
 local ADDON, ns = ...
 
@@ -42,7 +42,7 @@ function addon:OnLogin()
     local log = self:Log()
     log:Info("Vellum v%s loaded.", ns.VERSION)
 
-    local lc = LibStub and LibStub("LibCodex", true)
+    local lc = LibStub and LibStub("LibCodex-1.0", true)
     if not lc then
         log:Warn("LibCodex missing. Vellum cannot drive a guide without it.")
     end
@@ -61,7 +61,7 @@ local function out(msg)
 end
 
 slash:Subcommand("status", function()
-    local lc = LibStub and LibStub("LibCodex", true)
+    local lc = LibStub and LibStub("LibCodex-1.0", true)
     out("v" .. ns.VERSION)
     out("  LibCodex: " .. (lc and "OK" or "MISSING"))
     out("  Cairn:    " .. (Cairn and "OK" or "MISSING"))
@@ -70,7 +70,7 @@ slash:Subcommand("status", function()
 end, "show wiring (LibCodex, Cairn, profile)")
 
 slash:Subcommand("codex", function()
-    local lc = LibStub and LibStub("LibCodex", true)
+    local lc = LibStub and LibStub("LibCodex-1.0", true)
     if not lc then out("LibCodex not loaded.") return end
     if lc.Quests and lc:Quests() then
         out("LibCodex Quests reachable.")
