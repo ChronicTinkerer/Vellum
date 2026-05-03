@@ -1,0 +1,38 @@
+# OS junk
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+desktop.ini
+$RECYCLE.BIN/
+
+# Editors
+*.swp
+*.swo
+*~
+.idea/
+*.iml
+*.code-workspace
+
+# VS Code: never commit editor state to the public repo
+.vscode/
+
+# Lua build/bytecode
+*.luac
+.rocks/
+lua_modules/
+
+# WoW packager output (BigWigs Packager / wow-packager)
+.release/
+.pkgmeta-cache/
+
+# Logs, scratch, temp
+*.log
+*.bak
+*.tmp
+*.orig
+*.rej
+
+# Local dev scratch dirs
+scratch/
+tmp/
