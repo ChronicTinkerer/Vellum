@@ -6,24 +6,26 @@
 -- Visual layers (back to front):
 --   1. Parchment disc       (square color texture masked to a circle)
 --   2. Brass ring           (atlas-based decorative frame)
---   3. Wax-red chevron      (rotating; tint shifts with distance)
+--   3. Wax-red chevron      (rotating; tint shifts with distance, OR is
+--                            muted when the destination came from a rough
+--                            "codex-zone" fallback - signals "rough hint")
 --   4. Ink dot emblem       (the pivot point, doesn't rotate)
 --   5. Quest title + distance text below the frame
 --
--- Polish layers:
+-- Polish:
 --   * Smooth rotation lerp (not snappy)
---   * Pointer color shifts oxblood (far) -> bright red (close) -> green (arrival)
---   * Brief alpha pulse when the destination changes
+--   * Pointer tint shifts oxblood -> bright red -> green by distance
+--   * Source-aware tinting: a "codex-zone" destination renders in a
+--     desaturated parchment-brown so the user knows it's a zone-level hint
+--     rather than a precise waypoint
+--   * Brief alpha pulse when destination changes
 --
 -- Public API:
---   Vellum.Arrow.Track(mapID, x, y, label)   show + start tracking
---   Vellum.Arrow.Stop()                       hide and stop ticker
---   Vellum.Arrow.Center()                     re-center on screen
---   Vellum.Arrow.SetSize(px)                  resize (32..256)
+--   Vellum.Arrow.Track(mapID, x, y, label, source)
+--   Vellum.Arrow.Stop()
+--   Vellum.Arrow.Center()
+--   Vellum.Arrow.SetSize(px)
 --   Vellum.Arrow.IsShown()
---
--- Auto-wires to ns.Follower.OnChange at file-scope so the user doesn't have
--- to glue them together.
 
 local ADDON, ns = ...
 ns.Arrow = ns.Arrow or {}
@@ -34,24 +36,30 @@ local Arrow = ns.Arrow
 -- ==========================================================================
 
 local DEFAULT_SIZE    = 96
-local UPDATE_INTERVAL = 0.05            -- ticker resolution in seconds
-local ROT_LERP_RATE   = 12              -- larger = snappier rotation
+local UPDATE_INTERVAL = 0.05
+local ROT_LERP_RATE   = 12
 local ARRIVAL_YARDS   = 25
 
--- Parchment + ink palette
 local PARCHMENT_RGB = { 0.92, 0.86, 0.69 }
 local INK_RGB       = { 0.25, 0.18, 0.10 }
 
--- Pointer color stops, by distance in yards. Lerped between consecutive stops.
+-- Pointer color stops by distance (yards), used for precise sources.
 local POINTER_STOPS = {
-    { d = 0,             r = 0.30, g = 0.85, b = 0.30 },  -- arrival green
-    { d = ARRIVAL_YARDS, r = 0.85, g = 0.18, b = 0.10 },  -- bright wax red
-    { d = 200,           r = 0.55, g = 0.12, b = 0.10 },  -- mid wax red
-    { d = 1000,          r = 0.40, g = 0.10, b = 0.10 },  -- deep oxblood far
+    { d = 0,             r = 0.30, g = 0.85, b = 0.30 },
+    { d = ARRIVAL_YARDS, r = 0.85, g = 0.18, b = 0.10 },
+    { d = 200,           r = 0.55, g = 0.12, b = 0.10 },
+    { d = 1000,          r = 0.40, g = 0.10, b = 0.10 },
 }
 
--- Atlas chain: try the prettier name first, fall back to a reliable older one.
--- Texture path is the last-resort string fallback for the chevron.
+-- Muted tint used when the destination is a low-confidence "codex-zone"
+-- fallback. Parchment-brown, slightly desaturated; reads as "rough hint."
+local MUTED_RGB = { 0.62, 0.55, 0.40 }
+
+-- Sources that should use the muted tint instead of distance-based color.
+local MUTED_SOURCES = {
+    ["codex-zone"] = true,
+}
+
 local RING_ATLAS_CHAIN    = { "QuestPortraitBorder-Round", "common-iconframe" }
 local POINTER_ATLAS_CHAIN = { "Waypoint-MapPin-Untracked", "Minimap-PositionArrows" }
 local POINTER_FALLBACK    = "Interface\\Cursor\\Point"
@@ -117,7 +125,6 @@ local function bearingAndDistance(destMapID, destX, destY)
     return true, bearing, dist
 end
 
--- Try atlas names from a chain; returns true if any succeeded.
 local function applyFirstAtlas(tex, names)
     if not tex.SetAtlas then return false end
     for _, name in ipairs(names) do
@@ -132,7 +139,7 @@ end
 -- ==========================================================================
 
 local frame
-local destination          -- { mapID, x, y, label }
+local destination          -- { mapID, x, y, label, source }
 local ticker
 local currentRotation = 0
 local pulseAnim
@@ -176,7 +183,6 @@ local function buildFrame()
         persistPos(x, y)
     end)
 
-    -- Layer 1: parchment disc (square color masked to a circle).
     frame.disc = frame:CreateTexture(nil, "BACKGROUND")
     frame.disc:SetAllPoints()
     frame.disc:SetColorTexture(
@@ -189,15 +195,13 @@ local function buildFrame()
         if okMask then frame.disc:AddMaskTexture(mask) end
     end
 
-    -- Layer 2: brass ring (slightly oversized so it overlaps the disc edge).
     frame.ring = frame:CreateTexture(nil, "BORDER")
     frame.ring:SetPoint("TOPLEFT", frame, "TOPLEFT", -6, 6)
     frame.ring:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", 6, -6)
     if not applyFirstAtlas(frame.ring, RING_ATLAS_CHAIN) then
-        frame.ring:SetColorTexture(0.55, 0.42, 0.18, 0.0)  -- invisible fallback
+        frame.ring:SetColorTexture(0.55, 0.42, 0.18, 0.0)
     end
 
-    -- Layer 3: rotating wax-red chevron.
     frame.pointer = frame:CreateTexture(nil, "ARTWORK")
     frame.pointer:SetSize(DEFAULT_SIZE * 0.55, DEFAULT_SIZE * 0.55)
     frame.pointer:SetPoint("CENTER", frame, "CENTER", 0, 0)
@@ -206,13 +210,11 @@ local function buildFrame()
     end
     frame.pointer:SetVertexColor(0.55, 0.13, 0.16)
 
-    -- Layer 4: tiny ink dot at the pivot.
     frame.emblem = frame:CreateTexture(nil, "OVERLAY")
     frame.emblem:SetSize(DEFAULT_SIZE * 0.10, DEFAULT_SIZE * 0.10)
     frame.emblem:SetPoint("CENTER", frame, "CENTER", 0, 0)
     frame.emblem:SetColorTexture(INK_RGB[1], INK_RGB[2], INK_RGB[3], 1)
 
-    -- Layer 5: parchment-ink label + distance below.
     frame.label = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     frame.label:SetPoint("TOP", frame, "BOTTOM", 0, -2)
     frame.label:SetWidth(DEFAULT_SIZE * 2.6)
@@ -223,7 +225,6 @@ local function buildFrame()
     frame.distance:SetPoint("TOP", frame.label, "BOTTOM", 0, -1)
     frame.distance:SetTextColor(INK_RGB[1], INK_RGB[2], INK_RGB[3])
 
-    -- Pulse animation on waypoint change (alpha dip-and-recover on the whole frame).
     pulseAnim = frame:CreateAnimationGroup()
     local fade1 = pulseAnim:CreateAnimation("Alpha")
     fade1:SetFromAlpha(1.0); fade1:SetToAlpha(0.45); fade1:SetDuration(0.18); fade1:SetOrder(1)
@@ -252,7 +253,6 @@ local function tick(dt)
 
     local facing = (GetPlayerFacing and GetPlayerFacing()) or 0
     local target = bearing - facing
-
     local t = (dt or UPDATE_INTERVAL) * ROT_LERP_RATE
     if t > 1 then t = 1 end
     currentRotation = lerpAngle(currentRotation, target, t)
@@ -264,8 +264,12 @@ local function tick(dt)
         frame.distance:SetText(string.format("%.1f km", dist / 1000))
     end
 
-    local r, g, b = pointerColor(dist)
-    frame.pointer:SetVertexColor(r, g, b)
+    if MUTED_SOURCES[destination.source or ""] then
+        frame.pointer:SetVertexColor(MUTED_RGB[1], MUTED_RGB[2], MUTED_RGB[3])
+    else
+        local r, g, b = pointerColor(dist)
+        frame.pointer:SetVertexColor(r, g, b)
+    end
 end
 
 local function startTicker()
@@ -284,7 +288,7 @@ end
 -- Public API
 -- ==========================================================================
 
-function Arrow.Track(mapID, x, y, label)
+function Arrow.Track(mapID, x, y, label, source)
     if type(mapID) ~= "number" or type(x) ~= "number" or type(y) ~= "number" then
         return false, "Track requires numeric mapID, x, y."
     end
@@ -295,7 +299,7 @@ function Arrow.Track(mapID, x, y, label)
         and math.abs((destination.x or 0) - x) < 0.0001
         and math.abs((destination.y or 0) - y) < 0.0001
 
-    destination = { mapID = mapID, x = x, y = y, label = label or "" }
+    destination = { mapID = mapID, x = x, y = y, label = label or "", source = source }
     frame.label:SetText(destination.label)
     frame:Show()
 
@@ -338,7 +342,7 @@ function Arrow.IsShown()
 end
 
 -- ==========================================================================
--- Auto-wire to Follower (file-scope, runs once at load)
+-- Auto-wire to Follower
 -- ==========================================================================
 
 if ns.Follower and ns.Follower.OnChange then
@@ -348,7 +352,7 @@ if ns.Follower and ns.Follower.OnChange then
             if state.objectiveText and state.objectiveText ~= "" then
                 label = label .. "  -  " .. state.objectiveText
             end
-            Arrow.Track(state.mapID, state.x, state.y, label)
+            Arrow.Track(state.mapID, state.x, state.y, label, state.source)
         else
             Arrow.Stop()
         end
