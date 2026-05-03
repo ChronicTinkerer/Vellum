@@ -1,24 +1,10 @@
 -- Vellum/Arrow.lua
--- Wax-seal compass: a brass-rimmed circular pointer with an oxblood wax-red
--- chevron rotating inside on a parchment-toned disc, with a small ink emblem
--- at the pivot and parchment-ink labels below. Auto-tracks Vellum.Follower.
+-- Wax-seal compass: a brass-rimmed circular pointer with a wax-red chevron
+-- rotating inside on a parchment-toned disc, with a small ink emblem at the
+-- pivot and parchment-cream labels below. Auto-tracks Vellum.Follower.
 --
--- Visual layers (back to front):
---   1. Parchment disc       (square color texture masked to a circle)
---   2. Brass ring           (atlas-based decorative frame)
---   3. Wax-red chevron      (rotating; tint shifts with distance, OR is
---                            muted when the destination came from a rough
---                            "codex-zone" fallback - signals "rough hint")
---   4. Ink dot emblem       (the pivot point, doesn't rotate)
---   5. Quest title + distance text below the frame
---
--- Polish:
---   * Smooth rotation lerp (not snappy)
---   * Pointer tint shifts oxblood -> bright red -> green by distance
---   * Source-aware tinting: a "codex-zone" destination renders in a
---     desaturated parchment-brown so the user knows it's a zone-level hint
---     rather than a precise waypoint
---   * Brief alpha pulse when destination changes
+-- Uses stable Blizzard texture paths (not atlases) for ring + chevron so we
+-- don't rely on atlas names that might rename between patches.
 --
 -- Public API:
 --   Vellum.Arrow.Track(mapID, x, y, label, source)
@@ -41,7 +27,8 @@ local ROT_LERP_RATE   = 12
 local ARRIVAL_YARDS   = 25
 
 local PARCHMENT_RGB = { 0.92, 0.86, 0.69 }
-local INK_RGB       = { 0.25, 0.18, 0.10 }
+local INK_RGB       = { 0.25, 0.18, 0.10 }    -- used on the parchment disc
+local TEXT_RGB      = { 0.95, 0.90, 0.72 }    -- parchment-cream for off-disc text
 
 -- Pointer color stops by distance (yards), used for precise sources.
 local POINTER_STOPS = {
@@ -51,19 +38,20 @@ local POINTER_STOPS = {
     { d = 1000,          r = 0.40, g = 0.10, b = 0.10 },
 }
 
--- Muted tint used when the destination is a low-confidence "codex-zone"
--- fallback. Parchment-brown, slightly desaturated; reads as "rough hint."
-local MUTED_RGB = { 0.62, 0.55, 0.40 }
+-- Muted tint when the destination came from a low-confidence "codex-zone"
+-- fallback. Faded sepia red (NOT parchment-brown -- that blends into the
+-- disc behind the chevron); reads as "rough hint."
+local MUTED_RGB = { 0.55, 0.30, 0.30 }
 
--- Sources that should use the muted tint instead of distance-based color.
 local MUTED_SOURCES = {
     ["codex-zone"] = true,
 }
 
-local RING_ATLAS_CHAIN    = { "QuestPortraitBorder-Round", "common-iconframe" }
-local POINTER_ATLAS_CHAIN = { "Waypoint-MapPin-Untracked", "Minimap-PositionArrows" }
-local POINTER_FALLBACK    = "Interface\\Cursor\\Point"
-local CIRCLE_MASK_PATH    = "Interface\\CharacterFrame\\TempPortraitAlphaMask"
+-- Stable Blizzard texture paths. These have shipped since classic and won't
+-- vanish on a patch.
+local RING_TEXTURE    = "Interface\\Minimap\\MiniMap-TrackingBorder"
+local POINTER_TEXTURE = "Interface\\Minimap\\MinimapArrow"
+local CIRCLE_MASK     = "Interface\\CharacterFrame\\TempPortraitAlphaMask"
 
 -- ==========================================================================
 -- Math helpers
@@ -125,21 +113,12 @@ local function bearingAndDistance(destMapID, destX, destY)
     return true, bearing, dist
 end
 
-local function applyFirstAtlas(tex, names)
-    if not tex.SetAtlas then return false end
-    for _, name in ipairs(names) do
-        local ok = pcall(tex.SetAtlas, tex, name, false)
-        if ok then return true end
-    end
-    return false
-end
-
 -- ==========================================================================
 -- Frame state
 -- ==========================================================================
 
 local frame
-local destination          -- { mapID, x, y, label, source }
+local destination
 local ticker
 local currentRotation = 0
 local pulseAnim
@@ -183,6 +162,7 @@ local function buildFrame()
         persistPos(x, y)
     end)
 
+    -- Layer 1: parchment disc (square color masked to a circle).
     frame.disc = frame:CreateTexture(nil, "BACKGROUND")
     frame.disc:SetAllPoints()
     frame.disc:SetColorTexture(
@@ -190,41 +170,53 @@ local function buildFrame()
     if frame.CreateMaskTexture then
         local mask = frame:CreateMaskTexture()
         mask:SetAllPoints(frame.disc)
-        local okMask = pcall(mask.SetTexture, mask, CIRCLE_MASK_PATH,
+        local okMask = pcall(mask.SetTexture, mask, CIRCLE_MASK,
             "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
         if okMask then frame.disc:AddMaskTexture(mask) end
     end
 
+    -- Layer 2: brass ring (the same border that frames your minimap).
+    -- Sized slightly larger than the disc so it overlaps the edge cleanly.
     frame.ring = frame:CreateTexture(nil, "BORDER")
-    frame.ring:SetPoint("TOPLEFT", frame, "TOPLEFT", -6, 6)
-    frame.ring:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", 6, -6)
-    if not applyFirstAtlas(frame.ring, RING_ATLAS_CHAIN) then
-        frame.ring:SetColorTexture(0.55, 0.42, 0.18, 0.0)
-    end
+    frame.ring:SetPoint("TOPLEFT", frame, "TOPLEFT", -8, 8)
+    frame.ring:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", 8, -8)
+    pcall(frame.ring.SetTexture, frame.ring, RING_TEXTURE)
 
+    -- Layer 3: rotating chevron (Blizzard's player-arrow texture).
     frame.pointer = frame:CreateTexture(nil, "ARTWORK")
     frame.pointer:SetSize(DEFAULT_SIZE * 0.55, DEFAULT_SIZE * 0.55)
     frame.pointer:SetPoint("CENTER", frame, "CENTER", 0, 0)
-    if not applyFirstAtlas(frame.pointer, POINTER_ATLAS_CHAIN) then
-        pcall(frame.pointer.SetTexture, frame.pointer, POINTER_FALLBACK)
-    end
+    pcall(frame.pointer.SetTexture, frame.pointer, POINTER_TEXTURE)
     frame.pointer:SetVertexColor(0.55, 0.13, 0.16)
 
+    -- Layer 4: tiny ink dot at the pivot. Small enough that the chevron's
+    -- arms still poke past it.
     frame.emblem = frame:CreateTexture(nil, "OVERLAY")
-    frame.emblem:SetSize(DEFAULT_SIZE * 0.10, DEFAULT_SIZE * 0.10)
+    frame.emblem:SetSize(DEFAULT_SIZE * 0.08, DEFAULT_SIZE * 0.08)
     frame.emblem:SetPoint("CENTER", frame, "CENTER", 0, 0)
     frame.emblem:SetColorTexture(INK_RGB[1], INK_RGB[2], INK_RGB[3], 1)
 
+    -- Layer 5: parchment-cream label + distance below the frame, so they
+    -- read against any world background.
     frame.label = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     frame.label:SetPoint("TOP", frame, "BOTTOM", 0, -2)
     frame.label:SetWidth(DEFAULT_SIZE * 2.6)
     frame.label:SetWordWrap(false)
-    frame.label:SetTextColor(INK_RGB[1], INK_RGB[2], INK_RGB[3])
+    frame.label:SetTextColor(TEXT_RGB[1], TEXT_RGB[2], TEXT_RGB[3])
+    if frame.label.SetShadowOffset then
+        frame.label:SetShadowOffset(1, -1)
+        frame.label:SetShadowColor(0, 0, 0, 1)
+    end
 
     frame.distance = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     frame.distance:SetPoint("TOP", frame.label, "BOTTOM", 0, -1)
-    frame.distance:SetTextColor(INK_RGB[1], INK_RGB[2], INK_RGB[3])
+    frame.distance:SetTextColor(TEXT_RGB[1], TEXT_RGB[2], TEXT_RGB[3])
+    if frame.distance.SetShadowOffset then
+        frame.distance:SetShadowOffset(1, -1)
+        frame.distance:SetShadowColor(0, 0, 0, 1)
+    end
 
+    -- Pulse animation on waypoint change.
     pulseAnim = frame:CreateAnimationGroup()
     local fade1 = pulseAnim:CreateAnimation("Alpha")
     fade1:SetFromAlpha(1.0); fade1:SetToAlpha(0.45); fade1:SetDuration(0.18); fade1:SetOrder(1)
@@ -332,7 +324,7 @@ function Arrow.SetSize(px)
     if px < 32 then px = 32 elseif px > 256 then px = 256 end
     frame:SetSize(px, px)
     frame.pointer:SetSize(px * 0.55, px * 0.55)
-    frame.emblem:SetSize(px * 0.10, px * 0.10)
+    frame.emblem:SetSize(px * 0.08, px * 0.08)
     frame.label:SetWidth(px * 2.6)
     return px
 end

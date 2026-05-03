@@ -7,7 +7,7 @@ Vellum = ns
 ns.VERSION = "0.1.0-dev"
 
 -- --------------------------------------------------------------------------
--- DB. Cairn.DB owns SavedVariables persistence, defaults, and profiles.
+-- DB.
 -- --------------------------------------------------------------------------
 local db = Cairn.DB.New("VellumDB", {
     defaults = {
@@ -15,9 +15,7 @@ local db = Cairn.DB.New("VellumDB", {
             window = { x = 0, y = 0, shown = true },
             arrow  = { x = 0, y = 200, scale = 1 },
         },
-        global = {
-            schemaVersion = 1,
-        },
+        global = { schemaVersion = 1 },
     },
     profileType = "char",
 })
@@ -30,7 +28,7 @@ local addon = Cairn.Addon.New("Vellum")
 ns.addon = addon
 
 function addon:OnInit()
-    local _ = db.profile  -- materialize defaults on first run
+    local _ = db.profile
 end
 
 function addon:OnLogin()
@@ -42,9 +40,6 @@ function addon:OnLogin()
     end
 end
 
--- --------------------------------------------------------------------------
--- Output helper for slash command feedback.
--- --------------------------------------------------------------------------
 local function out(msg)
     if DEFAULT_CHAT_FRAME then
         DEFAULT_CHAT_FRAME:AddMessage("|cff9b8b6aVellum:|r " .. tostring(msg))
@@ -52,7 +47,7 @@ local function out(msg)
 end
 
 -- --------------------------------------------------------------------------
--- Quest resolver for /vellum follow [arg].
+-- Quest resolver for /vellum follow.
 -- --------------------------------------------------------------------------
 local function resolveQuestID(input)
     input = (input and input:match("^%s*(.-)%s*$")) or ""
@@ -107,7 +102,7 @@ end
 ns._resolveQuestID = resolveQuestID
 
 -- --------------------------------------------------------------------------
--- Slash router. /vellum and /vel.
+-- Slash router.
 -- --------------------------------------------------------------------------
 local slash = Cairn.Slash.Register("Vellum", "/vellum", { aliases = { "/vel" } })
 ns.slash = slash
@@ -150,18 +145,14 @@ slash:Subcommand("follow", function(rest)
 end, "follow a quest. no arg = supertracker; or pass <id> | <partial name>")
 
 slash:Subcommand("stop", function()
-    if ns.Follower and ns.Follower.Clear then
-        ns.Follower.Clear()
-    end
+    if ns.Follower and ns.Follower.Clear then ns.Follower.Clear() end
     if ns.Arrow and ns.Arrow.Stop then ns.Arrow.Stop() end
     if ns.Window and ns.Window.Hide then ns.Window.Hide() end
     out("stopped.")
 end, "stop following any quest")
 
 -- --------------------------------------------------------------------------
--- /vellum debug -- diagnose Follower + Locator state for the current quest.
--- Probes each Locator layer independently so we can see WHICH layer
--- supplied (or failed to supply) coords.
+-- /vellum debug -- probe every Locator layer for the current quest.
 -- --------------------------------------------------------------------------
 slash:Subcommand("debug", function()
     local s = (ns.Follower and ns.Follower.Get and ns.Follower.Get()) or {}
@@ -170,7 +161,7 @@ slash:Subcommand("debug", function()
         return
     end
 
-    out(string.format("Follower state:"))
+    out("Follower state:")
     out(string.format("  questID:     %s", tostring(s.questID)))
     out(string.format("  questTitle:  %s", tostring(s.questTitle)))
     out(string.format("  objIdx:      %s", tostring(s.objectiveIndex)))
@@ -181,7 +172,7 @@ slash:Subcommand("debug", function()
 
     out("Locator layer probes:")
 
-    -- Layer 1: Blizzard
+    -- [1] Blizzard waypoint
     if C_QuestLog and C_QuestLog.GetNextWaypoint then
         local m, x, y = C_QuestLog.GetNextWaypoint(s.questID)
         if m then
@@ -193,40 +184,72 @@ slash:Subcommand("debug", function()
         out("  [1] Blizzard GetNextWaypoint -> API unavailable")
     end
 
-    -- Layer 2 + 3: LibCodex
     local lc = LibStub and LibStub("LibCodex-1.0", true)
-    if not lc then
-        out("  [2] LibCodex -> not loaded")
-        return
-    end
 
-    -- Quests entry (giver / turn-in coords)
-    local qmod = lc.Quests and lc:Quests()
-    if qmod and qmod.Get then
-        local q = qmod:Get(s.questID)
+    -- [2] LibCodex Quests entry
+    if lc and lc.Quests and lc:Quests() and lc:Quests().Get then
+        local q = lc:Quests():Get(s.questID)
         if q then
-            out(string.format("  [2] LibCodex Quests:Get -> giver map=%s xy=(%s, %s) turnInNPC=%s",
+            out(string.format("  [2] LibCodex Quests:Get -> map=%s xy=(%s, %s) turnInNPC=%s",
                 tostring(q.mapID), tostring(q.x), tostring(q.y), tostring(q.turnInNPC)))
         else
             out("  [2] LibCodex Quests:Get -> not in catalog")
         end
+    else
+        out("  [2] LibCodex Quests -> module unavailable")
     end
 
-    -- QuestPOI (per-objective dots)
-    local poiMod = lc.QuestPOI and lc:QuestPOI()
-    if poiMod and poiMod.ForQuest then
-        local pois = poiMod:ForQuest(s.questID) or {}
+    -- [3] LibCodex QuestPOI
+    if lc and lc.QuestPOI and lc:QuestPOI() and lc:QuestPOI().ForQuest then
+        local pois = lc:QuestPOI():ForQuest(s.questID) or {}
         out(string.format("  [3] LibCodex QuestPOI:ForQuest -> %d POIs", #pois))
         for i, p in ipairs(pois) do
             if i > 3 then out("    ..."); break end
             local pt = p.points and p.points[1]
             out(string.format("    POI[%d] objIdx=%s map=%s pt=(%s, %s)",
                 i, tostring(p.objectiveIndex), tostring(p.uiMapID),
-                pt and tostring(pt.x) or "?",
-                pt and tostring(pt.y) or "?"))
+                pt and tostring(pt.x) or "?", pt and tostring(pt.y) or "?"))
         end
     else
         out("  [3] LibCodex QuestPOI -> module unavailable")
+    end
+
+    -- [4] codex-npc parser. Show what we extracted from each objective text
+    -- and whether LibCodex NPCs has a matching label.
+    out("  [4] codex-npc parser:")
+    if not (C_QuestLog and C_QuestLog.GetQuestObjectives) then
+        out("        GetQuestObjectives -> API unavailable")
+    else
+        local objs = C_QuestLog.GetQuestObjectives(s.questID) or {}
+        if #objs == 0 then
+            out("        no objectives returned")
+        else
+            for i, o in ipairs(objs) do
+                local name = ns._parseNPCFromObjectiveText and ns._parseNPCFromObjectiveText(o.text or "")
+                if not name then
+                    out(string.format("        obj[%d] '%s' -> no NPC name parsed", i, o.text or ""))
+                else
+                    local npc = ns._npcByName and ns._npcByName(name)
+                    if not npc then
+                        out(string.format("        obj[%d] -> name='%s' but NOT in LibCodex NPCs", i, name))
+                    elseif not (npc.locations and npc.locations[1]) then
+                        out(string.format("        obj[%d] -> name='%s' in catalog but no locations recorded", i, name))
+                    else
+                        local loc = npc.locations[1]
+                        out(string.format("        obj[%d] -> name='%s' loc=map=%s (%.3f, %.3f)",
+                            i, name, tostring(loc.mapID), loc.x or 0, loc.y or 0))
+                    end
+                end
+            end
+        end
+    end
+
+    -- [5] codex-zone fallback
+    if C_QuestLog and C_QuestLog.GetQuestUiMapID then
+        local uimap = C_QuestLog.GetQuestUiMapID(s.questID)
+        out(string.format("  [5] GetQuestUiMapID -> %s", tostring(uimap)))
+    else
+        out("  [5] GetQuestUiMapID -> API unavailable")
     end
 end, "diagnose Locator (per-layer coord probes for current quest)")
 

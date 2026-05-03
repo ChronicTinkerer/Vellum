@@ -8,19 +8,15 @@
 --
 --   objectiveIndex:
 --     - a 1-based index into C_QuestLog.GetQuestObjectives() output.
---       Locator returns where THAT objective lives.
 --     - nil = "the quest is complete; point at the turn-in".
 --
 --   source: short debug tag describing which fallback layer answered.
 --     "blizzard"      C_QuestLog.GetNextWaypoint
 --     "codex-poi"     LibCodex QuestPOI for this objective
---     "codex-npc"     Parsed an NPC name out of the objective text and
---                     looked it up in LibCodex NPCs catalog
---     "codex-giver"   LibCodex Quests entry mapID/x/y (giver coords)
+--     "codex-npc"     Parsed NPC name from objective text -> LibCodex NPCs
+--     "codex-giver"   LibCodex Quests entry mapID/x/y
 --     "codex-turnin"  LibCodex NPCs entry for the turnInNPC
---     "codex-zone"    Last-resort: C_QuestLog.GetQuestUiMapID, centered
---                     on the zone (0.5, 0.5). Less accurate; consumers
---                     may render a muted color to flag it as a hint.
+--     "codex-zone"    GetQuestUiMapID, centered on the zone (rough hint)
 --     "missing"       no layer had an answer
 
 local ADDON, ns = ...
@@ -75,7 +71,7 @@ local function codexPOIForObjective(questID, objectiveIndex)
     local mod = lc:QuestPOI()
     if not (mod and mod.ForQuest) then return nil end
 
-    local target = (objectiveIndex or 1) - 1   -- LibCodex POI is 0-based
+    local target = (objectiveIndex or 1) - 1
     local pois = mod:ForQuest(questID) or {}
 
     for _, p in ipairs(pois) do
@@ -85,23 +81,22 @@ local function codexPOIForObjective(questID, objectiveIndex)
             if pt.x and pt.y then return p.uiMapID, pt.x, pt.y end
         end
     end
-
     for _, p in ipairs(pois) do
         if p.points and p.points[1] and p.uiMapID then
             local pt = p.points[1]
             if pt.x and pt.y then return p.uiMapID, pt.x, pt.y end
         end
     end
-
     return nil
 end
 
 -- ==========================================================================
 -- Layer: parse objective text -> NPC name -> LibCodex NPCs lookup.
+-- Available to both ResolveObjective (single text) and ResolveTurnIn
+-- (scans all objective texts; useful when the completion text contains
+-- "Return to X").
 -- ==========================================================================
 
--- Patterns we try, in order. Most specific first. The (.+) capture is the
--- candidate NPC name that we then trim and look up.
 local OBJECTIVE_NPC_PATTERNS = {
     "Speak with (.+)",
     "Speak to (.+)",
@@ -110,9 +105,6 @@ local OBJECTIVE_NPC_PATTERNS = {
     "Report to (.+)",
 }
 
--- Walk LibCodex NPCs catalog for a label that case-insensitively matches.
--- AllRaw is the canonical iterator on a CollectionFactory module; we only
--- read fields, so this is safe even if the catalog is being mutated.
 local function npcByName(name)
     if not (name and name ~= "") then return nil end
     local lc = libCodex()
@@ -132,16 +124,14 @@ end
 local function parseNPCFromObjectiveText(text)
     if not text or text == "" then return nil end
 
-    -- Strip Blizzard's leading "X/Y " count prefix if present.
     local stripped = text:gsub("^%s*%d+%s*/%s*%d+%s*", "")
 
     for _, pat in ipairs(OBJECTIVE_NPC_PATTERNS) do
         local who = stripped:match(pat)
         if who then
-            -- Trim trailing punctuation and stop-phrases.
-            who = who:gsub("[%.,;:!?].*", "")     -- "Marla."   -> "Marla"
-            who = who:gsub("%s+at%s+.*", "")      -- "Marla at the Inn"
-            who = who:gsub("%s+in%s+.*", "")      -- "Marla in Stormwind"
+            who = who:gsub("[%.,;:!?].*", "")
+            who = who:gsub("%s+at%s+.*", "")
+            who = who:gsub("%s+in%s+.*", "")
             who = who:gsub("^%s+", ""):gsub("%s+$", "")
             if who ~= "" then return who end
         end
@@ -158,8 +148,25 @@ local function codexNPCByObjectiveText(questID, objectiveIndex)
     return npcFirstLoc(npcByName(name))
 end
 
+-- Scan ALL objectives for any parseable NPC name. Used by the turn-in path
+-- because completion text often lives in an objective entry like
+-- "Return to Khadgar."
+local function codexNPCByAnyObjective(questID)
+    if not (C_QuestLog and C_QuestLog.GetQuestObjectives) then return nil end
+    local objs = C_QuestLog.GetQuestObjectives(questID)
+    if not objs then return nil end
+    for _, o in ipairs(objs) do
+        local name = parseNPCFromObjectiveText(o.text or "")
+        if name then
+            local m, x, y = npcFirstLoc(npcByName(name))
+            if m then return m, x, y end
+        end
+    end
+    return nil
+end
+
 -- ==========================================================================
--- Layer: zone-center fallback. Always have *something* to point at.
+-- Layer: zone-center fallback.
 -- ==========================================================================
 
 local function questZoneFallback(questID)
@@ -212,6 +219,12 @@ function Locator.ResolveTurnIn(questID)
         if m then return m, x, y, "codex-turnin" end
     end
 
+    -- Scan completion-text objectives for "Return to X" / "Speak with X"
+    -- patterns. Catches WoD/Legion class-hall quests where Blizzard doesn't
+    -- supply a waypoint and LibCodex doesn't have giver/turnIn coords yet.
+    m, x, y = codexNPCByAnyObjective(questID)
+    if m then return m, x, y, "codex-npc" end
+
     if q and q.mapID and q.x and q.y then
         return q.mapID, q.x, q.y, "codex-giver"
     end
@@ -231,3 +244,4 @@ end
 
 -- Internal exports for testing.
 ns._parseNPCFromObjectiveText = parseNPCFromObjectiveText
+ns._npcByName                 = npcByName
