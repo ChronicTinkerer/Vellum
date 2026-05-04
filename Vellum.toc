@@ -2,12 +2,12 @@
 ## Title: Vellum
 ## Notes: A leveling guide built on LibCodex. Stones, book, page.
 ## Author: ChronicTinkerer
-## Version: 0.1.0-dev
+## Version: 2605040127
 ## SavedVariables: VellumDB
 ## Dependencies: LibCodex-1.0, Cairn
 ## OptionalDeps: TomTom
 ## X-Category: Quest
-## X-License: MIT
+## X-License: All Rights Reserved
 
 Core.lua
 Locator.lua
