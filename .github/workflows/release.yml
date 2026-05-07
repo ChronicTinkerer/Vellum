@@ -1,0 +1,44 @@
+name: Release
+
+# Triggers on a pushed tag of any name. Convention is the sequential build
+# number that matches the .toc Version (e.g. `1`, `2`, ... bumped by
+# .dev/release.ps1). Optionally `v`-prefixed. Pushing a tag is the only
+# way a release ever ships -- pushes to main do nothing.
+on:
+  push:
+    tags:
+      - "**"
+  # Allow manual re-runs from the GitHub Actions UI in case a release upload
+  # silently fails (rate limit, transient API error, etc.).
+  workflow_dispatch:
+
+# Required so the packager can create a GitHub Release with the zip
+# attached. The CF/Wago/WoWI uploads use their own API tokens (secrets).
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Package and release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone project
+        uses: actions/checkout@v4
+        with:
+          # Full history so the packager can read tag metadata and emit a
+          # proper changelog from commits since the last tag.
+          fetch-depth: 0
+
+      - name: Package and release
+        uses: BigWigsMods/packager@v2
+        env:
+          # Built-in token, used to publish the GitHub Release.
+          GITHUB_OAUTH: ${{ secrets.GITHUB_TOKEN }}
+
+          # Per-site upload tokens. These are repository secrets you set in
+          # GitHub -> Settings -> Secrets and variables -> Actions.
+          # If a token is missing, the packager simply skips that site --
+          # so you can wire CurseForge today and add WoWI/Wago later.
+          CF_API_KEY:        ${{ secrets.CF_API_KEY }}
+          WAGO_API_TOKEN:    ${{ secrets.WAGO_API_TOKEN }}
+          WOWI_API_TOKEN:    ${{ secrets.WOWI_API_TOKEN }}

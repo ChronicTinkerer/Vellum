@@ -1,0 +1,35 @@
+# Vellum packaging manifest.
+# Consumed by BigWigsMods/packager v2 (see .github/workflows/release.yml).
+# Reference: https://github.com/BigWigsMods/packager
+
+# Folder name inside the published zip. Must match the .toc filename so WoW
+# can load the addon under the same name on user installs.
+package-as: Vellum
+
+# Don't ship dev/build infrastructure or editor state to end users.
+#  - .dev/         All dev-local artifacts: release.ps1, intermediate dumps,
+#                  caches, configs. One folder, one ignore line.
+#  - SESSION_NOTES.md is project-internal, not user-facing
+#  - editor/IDE folders never ship
+#  - scratch/tmp dirs are local workspace junk
+#  - VellumLogo.png is a brand source asset; the packager doesn't need
+#    the full-resolution master in the user-facing zip
+ignore:
+  - .dev
+  - .vscode
+  - .idea
+  - SESSION_NOTES.md
+  - "*.bat"
+  - "*.ps1"
+  - scratch
+  - tmp
+  - VellumLogo.png
+
+# We do NOT use @project-version@ substitution in the .toc -- the version
+# field carries our sequential build number (+1 per .dev/release.ps1 run).
+# The packager will leave a hardcoded `## Version:` line untouched, so no
+# `enable-toc-creation` or `move-out-of-package-as` directives are needed.
+
+# License is All Rights Reserved (end-user addon, not a library); ship it
+# inside the package so users see the licensing terms.
+# (LICENSE is at the repo root and lives inside package-as by default.)

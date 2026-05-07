@@ -2,12 +2,19 @@
 ## Title: Vellum
 ## Notes: A leveling guide built on LibCodex. Stones, book, page.
 ## Author: ChronicTinkerer
-## Version: 2605040127
+## Version: 1
 ## SavedVariables: VellumDB
 ## Dependencies: LibCodex-1.0, Cairn
 ## OptionalDeps: TomTom
 ## X-Category: Quest
 ## X-License: All Rights Reserved
+## X-Website: https://github.com/ChronicTinkerer/Vellum
+# Distribution project IDs -- fill in once Vellum is registered on each site.
+# Without these the BigWigs packager skips that site silently (CF/WoWI/Wago
+# token presence in the Actions secrets controls whether uploads attempt at all).
+# ## X-Curse-Project-ID: 0
+# ## X-WoWI-ID: 0
+# ## X-Wago-ID: 0
 
 Core.lua
 Locator.lua

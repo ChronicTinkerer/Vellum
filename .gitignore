@@ -1,38 +1,173 @@
-# OS junk
+# Vellum .gitignore
+# Rule: track only what the addon needs to FUNCTION at runtime, plus
+# the release-pipeline files the GitHub Actions workflow uses
+# (.pkgmeta, .github/) and minimal public-facing docs
+# (README, LICENSE, CHANGELOG). Everything else stays out of the
+# public repo.
+
+# ---------------------------------------------------------------- OS junk
 .DS_Store
+.AppleDouble
+.LSOverride
 Thumbs.db
 ehthumbs.db
+ehthumbs_vista.db
 Desktop.ini
 desktop.ini
 $RECYCLE.BIN/
+*.lnk
 
-# Editors
-*.swp
-*.swo
-*~
-.idea/
-*.iml
+# --------------------------------------------------------- Editors & IDEs
+# VS Code
+.vscode/
 *.code-workspace
 
-# VS Code: never commit editor state to the public repo
-.vscode/
+# JetBrains (IntelliJ, Rider, WebStorm, etc.)
+.idea/
+*.iml
+*.ipr
+*.iws
 
-# Lua build/bytecode
-*.luac
-.rocks/
-lua_modules/
+# Cursor / AI editors
+.cursor/
+.cursorrules
+.aider*
+.copilot/
+.windsurf/
 
-# WoW packager output (BigWigs Packager / wow-packager)
-.release/
-.pkgmeta-cache/
+# Visual Studio
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
 
-# Logs, scratch, temp
-*.log
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim / Neovim
+.nvimrc
+.exrc
+.vimrc.local
+[._]*.s[a-v][a-z]
+[._]*.sw[a-p]
+[._]s[a-rt-v][a-z]
+[._]ss[a-gi-z]
+[._]sw[a-p]
+*~
+
+# Emacs
+\#*\#
+.\#*
+
+# Eclipse / NetBeans
+.project
+.classpath
+.settings/
+nbproject/
+.metadata/
+
+# TextMate
+*.tmproj
+*.tmproject
+tmtags
+
+# ----------------------------------------------------- Editor scratch/backup
+*.swp
+*.swo
 *.bak
 *.tmp
 *.orig
 *.rej
+*.old
 
-# Local dev scratch dirs
+# ------------------------------------------------------------- Lua tooling
+*.luac
+.luacheckcache
+.luarocks/
+.rocks/
+lua_modules/
+luacov.*.out
+
+# ----------------------------------------------------- WoW packager output
+.release/
+.pkgmeta-cache/
+*.zip
+
+# ----------------------------------------------------- Dev tooling folder
+# All dev-local artifacts (release.ps1, future tools, intermediate dumps,
+# caches, configs) live under .dev/ at the repo root per the project-wide
+# convention. One folder, one ignore line, one .pkgmeta exclusion.
+.dev/
+
+# ---------------------------------------------------------- PowerShell scripts
+# Local-only convenience scripts. The GitHub Actions release workflow calls
+# BigWigs packager directly and does NOT execute any .ps1 from the repo.
+*.ps1
+*.psm1
+*.psd1
+
+# ----------------------------------------------------- Internal design docs
+# Ignore ALL markdown by default, then explicitly allow public ones.
+# Keeps ARCHITECTURE.md, BREAKING.md, SESSION_NOTES.md, NOTES.md,
+# TODO.md, ROADMAP.md, DESIGN.md, scratch drafts, etc. out of the public
+# repo without listing them one by one.
+*.md
+!README.md
+!CHANGELOG.md
+!CONTRIBUTING.md
+!CODE_OF_CONDUCT.md
+!SECURITY.md
+
+# ---------------------------------------------------------- Art source files
+# Track only exported assets WoW loads (.tga, .blp, .png, .ttf, .otf,
+# .ogg, .mp3). Editable source files stay private.
+*.psd
+*.psb
+*.ai
+*.svg.bak
+*.xcf
+*.kra
+*.sketch
+*.fig
+*.afdesign
+*.afphoto
+*.afpub
+*.cdr
+*.indd
+*.gimp
+
+# ---------------------------------------------------------- Logs and scratch
+*.log
 scratch/
 tmp/
+temp/
+.scratch/
+*.scratch.*
+draft/
+drafts/
+
+# ------------------------------------------- Local config and credentials
+.env
+.env.*
+*.local
+secrets.lua
+config.local.lua
+
+# ------------------------------------------------- Test/coverage artifacts
+coverage/
+*.lcov
+.nyc_output/
+test-results/
+junit.xml
+
+# ---------------------------------------------------------------- Misc
+*.pid
+*.seed
+.cache/
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+venv/
