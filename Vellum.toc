@@ -2,7 +2,7 @@
 ## Title: Vellum
 ## Notes: A leveling guide built on LibCodex. Stones, book, page.
 ## Author: ChronicTinkerer
-## Version: 1
+## Version: 3
 ## SavedVariables: VellumDB
 ## Dependencies: LibCodex-1.0, Cairn
 ## OptionalDeps: TomTom
@@ -12,7 +12,7 @@
 # Distribution project IDs -- fill in once Vellum is registered on each site.
 # Without these the BigWigs packager skips that site silently (CF/WoWI/Wago
 # token presence in the Actions secrets controls whether uploads attempt at all).
-# ## X-Curse-Project-ID: 0
+## X-Curse-Project-ID: 1536809
 # ## X-WoWI-ID: 0
 # ## X-Wago-ID: 0
 
@@ -20,4 +20,4 @@ Core.lua
 Locator.lua
 Follower.lua
 Arrow.lua
-Window.lua
+Panel.lua

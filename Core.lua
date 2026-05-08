@@ -12,7 +12,12 @@ ns.VERSION = "0.1.0-dev"
 local db = Cairn.DB.New("VellumDB", {
     defaults = {
         profile = {
-            window = { x = 0, y = 0, shown = true },
+            panel = {
+                x = 0, y = 0,
+                autoShow        = true,   -- show on Follower:Set
+                autoHideOnClear = true,   -- hide on Follower:Clear
+                selectedTab     = "log",  -- last viewed tab
+            },
             arrow  = { x = 0, y = 200, scale = 1 },
         },
         global = { schemaVersion = 1 },
@@ -147,9 +152,13 @@ end, "follow a quest. no arg = supertracker; or pass <id> | <partial name>")
 slash:Subcommand("stop", function()
     if ns.Follower and ns.Follower.Clear then ns.Follower.Clear() end
     if ns.Arrow and ns.Arrow.Stop then ns.Arrow.Stop() end
-    if ns.Window and ns.Window.Hide then ns.Window.Hide() end
+    if ns.Panel and ns.Panel.Hide then ns.Panel.Hide() end
     out("stopped.")
 end, "stop following any quest")
+
+slash:Subcommand("panel", function()
+    if ns.Panel and ns.Panel.Toggle then ns.Panel.Toggle() end
+end, "toggle the Vellum panel (Log / Zone / Search)")
 
 -- --------------------------------------------------------------------------
 -- /vellum debug -- probe every Locator layer for the current quest.

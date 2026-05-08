@@ -9,6 +9,33 @@ The format is loosely based on
 
 ## [Unreleased]
 
+### Added
+
+- **Drag-position persistence.** Cairn-Gui-Widgets-Standard-2.0 MINOR=5 added a `"Moved"` event on Window; MINOR=6 then made it actually correct (MINOR=5 fired Moved with raw `GetPoint(1)` coords that were `BOTTOMLEFT`-relative after `StartMoving`/`StopMovingOrSizing` rewrote the anchor; persisting them and restoring via `SetPoint("CENTER", UIParent, "CENTER", x, y)` made the window jump on `/reload`. MINOR=6 normalizes the frame back to `CENTER`-relative coords inside `OnDragStop` and fires Moved with those, so the persisted `(x, y)` is always an offset from `UIParent` center). `Panel.lua` subscribes via `win.Cairn:On("Moved", function(_, x, y) ... end)` and writes `db.profile.panel.x/y` so the panel position round-trips across `/reload`. Previously the panel would re-center on every login because the lib had no Moved callback to drive saved-variable writes.
+
+### Removed
+
+- **`Panel.lua` `fixButtonClicks(btn)` workaround** — removed all 4 call sites and the helper itself. `Cairn-Gui-Widgets-Standard-2.0` MINOR=4 now ships the framework-level fix: `Button.OnAcquire` calls `frame:RegisterForClicks("AnyUp")` so consumer code no longer needs the per-row workaround. A short historical-reference comment stays at the original location for git-blame breadcrumbs.
+
+### Added
+
+- **`Panel.lua`** — first real consumer of `Cairn-Gui-2.0`. A movable Window with a header banner (Vellum logo + current quest title + objective body) above a `TabGroup` carrying three tabs:
+  - **Log** — lists `C_QuestLog` entries; click a row to follow. Refreshes on `QUEST_LOG_UPDATE` while the tab is selected.
+  - **Zone** — scans `LibCodex Quests:AllRaw()` filtered to the player's current `mapID` and faction side (`A` / `H` / `B`). Refreshes on `ZONE_CHANGED_NEW_AREA`. Caps at 200 rendered rows with an overflow note.
+  - **Search** — `EditBox` drives live filtering by quest ID (fast-path `Quests:Get`) or partial label match. Caps at 50 rows.
+- **`Logo.png`** — 128x128 RGB asset packaged for in-client display. Embedded in the panel header via WoW's inline-texture syntax (`|TInterface\AddOns\Vellum\Logo:24:24|t`) so consumers stay inside Cairn-Gui widgets without raw `CreateTexture`. The 1254x1254 master `VellumLogo.png` stays in the source tree but `.pkgmeta` ignores it from the published zip.
+- **`/vellum panel`** slash subcommand toggles the panel.
+- **`db.profile.panel`** schema with `x`, `y`, `autoShow`, `autoHideOnClear`, `selectedTab`. Replaces the v0.1 `db.profile.window` schema.
+
+### Changed
+
+- **`Vellum.toc`** loads `Panel.lua` in place of `Window.lua`.
+- **`Core.lua`** `/vellum stop` now hides `ns.Panel` rather than `ns.Window`. Slash router gains the `panel` subcommand.
+
+### Removed
+
+- **`Window.lua`** — replaced by `Panel.lua`. Backwards-compat shim inside `Panel.lua` aliases `ns.Window.Show / Hide / SetText / IsShown / Center` onto the corresponding `Panel` methods so existing call sites that haven't been updated yet keep working.
+
 ## [1] — Vellum v0.1: single-quest follower (2026-05-03)
 
 Initial public build. Vellum is a leveling guide that follows one quest
