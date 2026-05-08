@@ -2,7 +2,7 @@
 ## Title: Vellum
 ## Notes: A leveling guide built on LibCodex. Stones, book, page.
 ## Author: ChronicTinkerer
-## Version: 3
+## Version: 4
 ## SavedVariables: VellumDB
 ## Dependencies: LibCodex-1.0, Cairn
 ## OptionalDeps: TomTom
