@@ -18,7 +18,70 @@ local db = Cairn.DB.New("VellumDB", {
                 autoHideOnClear = true,   -- hide on Follower:Clear
                 selectedTab     = "log",  -- last viewed tab
             },
+            -- HomeWindow state. Position + which top tab + which sidebar
+            -- category is active, plus the Phase 2 saved-variable backings
+            -- for the four dashboard tiles (history, gold, favorites,
+            -- time-played). All tiles read from these tables; Phase 2
+            -- writes to them via Cairn.Events subscriptions in HomeData.lua.
+            home = {
+                x = 0, y = 0,
+                selectedTab     = "home",       -- Home / Active / Recent
+                sidebarSelected = "dashboard",  -- "dashboard" or category id
+
+                -- Capped list of recently followed quests. Newest first.
+                -- Cap is enforced in HomeData.PushHistoryEntry (default 50).
+                -- Each entry: { questID, title, followedAt = epoch_seconds,
+                --               completedAt = epoch_seconds_or_nil,
+                --               mapID = number_or_nil }
+                guideHistory = {},
+
+                -- Gold accumulator. Updated on PLAYER_MONEY.
+                -- dayKey   "YYYY-MM-DD"   the day todayDelta belongs to
+                -- weekKey  "YYYY-WW"      the ISO week weekDelta belongs to
+                -- todayDelta / weekDelta  copper net change since rollover
+                -- lastSeen                last GetMoney() value (for diffing)
+                gold = {
+                    dayKey     = nil,
+                    weekKey    = nil,
+                    todayDelta = 0,
+                    weekDelta  = 0,
+                    lastSeen   = 0,
+                },
+
+                -- Favorited quests. Set keyed by questID, value = true.
+                favorites = {},
+
+                -- Time-played state. Refreshed via RequestTimePlayed +
+                -- TIME_PLAYED_MSG. Live time = totalAtLogin + (GetTime() -
+                -- sessionStartGameTime). Both fields nil before first msg.
+                timePlayed = {
+                    totalAtLogin         = nil,
+                    sessionStartGameTime = nil,
+                },
+            },
+            stepWindow = {
+                x = 0, y = 0,
+                tabs      = {},   -- ordered list of followed quest IDs
+                activeTab = nil,  -- currently focused tab id
+            },
             arrow  = { x = 0, y = 200, scale = 1 },
+
+            -- Phase 3B route-planner settings. The planner reads these on
+            -- every Recompute. SetMode/SetRadius from RoutePlanner.lua mutate
+            -- this table and trigger a recalc.
+            --   mode         = "radius" | "completionist"
+            --   radius       = include catalog quests within this many
+            --                  game-yards of the player (radius mode only)
+            --   maxWaypoints = solver cap; routes longer than this get
+            --                  truncated after candidate enumeration
+            --   debounceMs   = trailing-edge debounce window for recalc
+            --                  triggers (QUEST_LOG_UPDATE etc. fire often)
+            engine = {
+                mode         = "radius",
+                radius       = 1500,
+                maxWaypoints = 50,
+                debounceMs   = 250,
+            },
         },
         global = { schemaVersion = 1 },
     },
@@ -139,26 +202,51 @@ end, "reset the current profile to defaults")
 slash:Subcommand("follow", function(rest)
     local qid, err = resolveQuestID(rest)
     if not qid then out(err) return end
-    if not (ns.Follower and ns.Follower.Set) then
-        out("follower module not available.")
-        return
+
+    -- Phase 3D: /vellum follow X pins X as route[1] in the planner so the
+    -- arrow points there regardless of which other waypoint is currently
+    -- closest. Legacy Follower.Set still mutates so the (read-only) state
+    -- table reflects user intent.
+    if ns.Follower and ns.Follower.Set then ns.Follower.Set(qid) end
+    if ns.RoutePlanner and ns.RoutePlanner.Pin then
+        ns.RoutePlanner.Pin(qid)
     end
-    ns.Follower.Set(qid)
+
     local title = (C_QuestLog and C_QuestLog.GetTitleForQuestID
         and C_QuestLog.GetTitleForQuestID(qid)) or tostring(qid)
-    out(string.format("following: %s (id %d)", title, qid))
-end, "follow a quest. no arg = supertracker; or pass <id> | <partial name>")
+    out(string.format("pinned: %s (id %d)", title, qid))
+end, "pin a quest as next. no arg = supertracker; or pass <id> | <partial name>")
 
 slash:Subcommand("stop", function()
     if ns.Follower and ns.Follower.Clear then ns.Follower.Clear() end
+    if ns.RoutePlanner and ns.RoutePlanner.Unpin then
+        ns.RoutePlanner.Unpin()
+    end
     if ns.Arrow and ns.Arrow.Stop then ns.Arrow.Stop() end
-    if ns.Panel and ns.Panel.Hide then ns.Panel.Hide() end
-    out("stopped.")
-end, "stop following any quest")
+    if ns.StepWindow and ns.StepWindow.Hide then ns.StepWindow.Hide() end
+    out("unpinned + stopped.")
+end, "unpin any pinned quest and stop tracking")
 
-slash:Subcommand("panel", function()
-    if ns.Panel and ns.Panel.Toggle then ns.Panel.Toggle() end
-end, "toggle the Vellum panel (Log / Zone / Search)")
+slash:Subcommand("home", function()
+    if ns.HomeWindow and ns.HomeWindow.Toggle then
+        ns.HomeWindow.Toggle()
+    end
+end, "toggle the Vellum Home launcher")
+
+slash:Subcommand("guide", function(rest)
+    local input = (rest and rest:match("^%s*(.-)%s*$")) or ""
+    if input == "" then
+        if ns.StepWindow and ns.StepWindow.Toggle then
+            ns.StepWindow.Toggle()
+        end
+        return
+    end
+    local qid, err = resolveQuestID(input)
+    if not qid then out(err) return end
+    if ns.StepWindow and ns.StepWindow.OpenForQuest then
+        ns.StepWindow.OpenForQuest(qid)
+    end
+end, "open the Step viewer (no arg toggles; or pass <id>|<partial name>)")
 
 -- --------------------------------------------------------------------------
 -- /vellum debug -- probe every Locator layer for the current quest.
@@ -262,4 +350,12 @@ slash:Subcommand("debug", function()
     end
 end, "diagnose Locator (per-layer coord probes for current quest)")
 
-slash:Default(function() slash:PrintHelp() end)
+-- Bare `/vellum` opens the Home launcher (the canonical Zygor-style
+-- entry point). `/vellum help` still prints the full subcommand list.
+slash:Default(function()
+    if ns.HomeWindow and ns.HomeWindow.Toggle then
+        ns.HomeWindow.Toggle()
+    else
+        slash:PrintHelp()
+    end
+end)

@@ -1,40 +1,223 @@
 -- Vellum/Follower.lua
--- The quest-event observer. One quest is "followed" at a time. On every
--- relevant quest event we recompute the current step (which objective is
--- active, or whether the quest is ready to turn in) and fire OnChange
--- callbacks if the resolved location actually changed.
+-- Quest-state observer + state machine.
+--
+-- Two layers in this file:
+--
+-- 1. Pure layer -- Follower.ComputeState(questID) is a pure function over
+--    (C_QuestLog state + LibCodex catalog + Locator). Given any questID it
+--    returns a state record telling you "what's going on with this quest
+--    right now." Used by the engine (Waypoint.For, RoutePlanner) to survey
+--    many quests at once. Doesn't mutate anything.
+--
+-- 2. Live layer -- the legacy single-quest "currently followed" surface.
+--    Set(qid) / Clear() / Refresh() / Get() / OnChange(fn). Internally
+--    Refresh now calls ComputeState; behavior is unchanged for callers
+--    that already use this API (Arrow.lua, HomeWindow.lua, HomeData.lua).
+--
+-- ----- States ----------------------------------------------------------
+-- STATES.NOT_IN_LOG        Quest is in catalog with known giver coords;
+--                          player doesn't have it. Engine will route here
+--                          for pickup.
+-- STATES.OBJECTIVE         Quest is in log; at least one objective is
+--                          unfinished. Record carries objectiveIndex +
+--                          objectiveText + the resolved (mapID, x, y) for
+--                          that objective via Locator.ResolveObjective.
+-- STATES.READY_TO_TURNIN   Quest is in log + IsComplete is true (or all
+--                          objectives report finished). Record carries the
+--                          turn-in (mapID, x, y) via Locator.ResolveTurnIn.
+-- STATES.DONE              IsQuestFlaggedCompleted returns true. Quest is
+--                          finished and history; engine emits no waypoint.
+-- STATES.ABANDONED         (Reserved.) Engine doesn't observe this state
+--                          today -- the live layer just clears on
+--                          QUEST_REMOVED. Kept in the enum so consumers
+--                          can pattern-match completely.
+-- STATES.UNKNOWN           Not in log + not in catalog with usable coords.
+--                          Engine emits no waypoint.
 --
 -- Public API:
 --
---   Vellum.Follower.Set(questID)        start following questID
---   Vellum.Follower.Clear()             stop following anything
---   Vellum.Follower.Refresh()           recompute current step now
---   Vellum.Follower.Get()               returns the live state table (read-only)
---   Vellum.Follower.OnChange(fn)        subscribe; returns unsubscribe closure
---                                        fn receives the state table
---
--- State shape (all fields nil when not following):
---   {
---     questID         = 12345,
---     questTitle      = "Wolves of the Wood",
---     objectiveIndex  = 1,                 -- 1-based; nil when isComplete
---     objectiveText   = "Wolves slain: 0/8",
---     isComplete      = false,
---     mapID = 14, x = 0.42, y = 0.71,
---     source          = "blizzard"|"codex-poi"|"codex-turnin"|"codex-giver"|"missing",
---   }
---
--- OnChange fires only when the resolved signature differs from the previous
--- one (questID + objectiveIndex + isComplete + mapID + x + y), so a noisy
--- QUEST_LOG_UPDATE storm doesn't translate to N callback runs.
+--   Vellum.Follower.STATES                table of state-name strings
+--   Vellum.Follower.ComputeState(qid)     pure: returns state record
+--   Vellum.Follower.Set(qid)              live: start following one quest
+--   Vellum.Follower.Clear()               live: stop following anything
+--   Vellum.Follower.Refresh()             live: recompute current step
+--   Vellum.Follower.Get()                 live: returns the state table
+--   Vellum.Follower.OnChange(fn)          live: subscribe; returns
+--                                         unsubscribe-closure
 
 local ADDON, ns = ...
 ns.Follower = ns.Follower or {}
 local Follower = ns.Follower
 
--- --------------------------------------------------------------------------
--- State + subscribers
--- --------------------------------------------------------------------------
+-- ==========================================================================
+-- States
+-- ==========================================================================
+
+Follower.STATES = {
+    NOT_IN_LOG       = "NOT_IN_LOG",
+    OBJECTIVE        = "OBJECTIVE",
+    READY_TO_TURNIN  = "READY_TO_TURNIN",
+    DONE             = "DONE",
+    ABANDONED        = "ABANDONED",
+    UNKNOWN          = "UNKNOWN",
+}
+local STATES = Follower.STATES
+
+-- ==========================================================================
+-- LibStub
+-- ==========================================================================
+
+local function libCodex()
+    return LibStub and LibStub("LibCodex-1.0", true)
+end
+
+-- ==========================================================================
+-- Pure: ComputeState(questID)
+-- ==========================================================================
+
+-- Helper: pull the catalog entry for questID (or nil).
+local function catalogEntry(questID)
+    local lc  = libCodex()
+    local mod = lc and lc.Quests and lc:Quests()
+    if not (mod and mod.Get) then return nil end
+    return mod:Get(questID)
+end
+
+-- Returns a fresh state record. Never reads or writes Follower's live state.
+-- Safe to call for any questID in any quantity (the planner will hammer it).
+function Follower.ComputeState(questID)
+    if type(questID) ~= "number" or questID <= 0 then
+        return { state = STATES.UNKNOWN, questID = questID }
+    end
+
+    -- Quest already turned in (account history)?
+    if C_QuestLog and C_QuestLog.IsQuestFlaggedCompleted
+       and C_QuestLog.IsQuestFlaggedCompleted(questID) then
+        return { state = STATES.DONE, questID = questID }
+    end
+
+    -- Currently in log?
+    if C_QuestLog and C_QuestLog.IsOnQuest and C_QuestLog.IsOnQuest(questID) then
+        local title = (C_QuestLog.GetTitleForQuestID
+            and C_QuestLog.GetTitleForQuestID(questID)) or nil
+
+        local isComplete = (C_QuestLog.IsComplete
+            and C_QuestLog.IsComplete(questID)) or false
+
+        if isComplete then
+            local mapID, x, y, source
+            if ns.Locator and ns.Locator.ResolveTurnIn then
+                mapID, x, y, source = ns.Locator.ResolveTurnIn(questID)
+            end
+            return {
+                state   = STATES.READY_TO_TURNIN,
+                questID = questID,
+                title   = title,
+                mapID   = mapID, x = x, y = y, source = source,
+            }
+        end
+
+        -- Pick first unfinished objective.
+        local objectives = (C_QuestLog.GetQuestObjectives
+            and C_QuestLog.GetQuestObjectives(questID)) or {}
+        local idx, obj
+        for i, o in ipairs(objectives) do
+            if not o.finished then idx, obj = i, o; break end
+        end
+
+        if not idx then
+            -- All objectives report finished but IsComplete didn't say so.
+            -- Treat as turn-in (matches legacy Refresh behavior).
+            local mapID, x, y, source
+            if ns.Locator and ns.Locator.ResolveTurnIn then
+                mapID, x, y, source = ns.Locator.ResolveTurnIn(questID)
+            end
+            return {
+                state   = STATES.READY_TO_TURNIN,
+                questID = questID,
+                title   = title,
+                mapID   = mapID, x = x, y = y, source = source,
+            }
+        end
+
+        local mapID, x, y, source
+        if ns.Locator and ns.Locator.ResolveObjective then
+            mapID, x, y, source = ns.Locator.ResolveObjective(questID, idx)
+        end
+        return {
+            state          = STATES.OBJECTIVE,
+            questID        = questID,
+            title          = title,
+            objectiveIndex = idx,
+            objectiveText  = obj.text or "",
+            mapID = mapID, x = x, y = y, source = source,
+        }
+    end
+
+    -- Not in log. Catalog entry with a usable giver location?
+    local q = catalogEntry(questID)
+    if q then
+        -- Flat shape (runtime-added entries via AddFromAPI).
+        if q.mapID and q.x and q.y then
+            return {
+                state   = STATES.NOT_IN_LOG,
+                questID = questID,
+                title   = q.label,
+                mapID = q.mapID, x = q.x, y = q.y, source = "codex-giver",
+                level   = q.level,
+                side    = q.side,
+            }
+        end
+        -- Bundled-row shape: walk q.locations for point="start" entry.
+        -- Prefer player's current map, otherwise first start point.
+        if type(q.locations) == "table" then
+            local pmap = (C_Map and C_Map.GetBestMapForUnit
+                and C_Map.GetBestMapForUnit("player")) or nil
+            local picked
+            if pmap then
+                for _, loc in ipairs(q.locations) do
+                    if loc.point == "start"
+                       and loc.mapID == pmap
+                       and loc.x and loc.y then
+                        picked = loc; break
+                    end
+                end
+            end
+            if not picked then
+                for _, loc in ipairs(q.locations) do
+                    if loc.point == "start"
+                       and loc.mapID and loc.x and loc.y then
+                        picked = loc; break
+                    end
+                end
+            end
+            if picked then
+                return {
+                    state   = STATES.NOT_IN_LOG,
+                    questID = questID,
+                    title   = q.label,
+                    mapID   = picked.mapID,
+                    x       = picked.x,
+                    y       = picked.y,
+                    source  = "codex-locations-start",
+                    level   = q.level,
+                    side    = q.side,
+                }
+            end
+        end
+    end
+
+    -- Catalog has it but no coords, or not in catalog at all.
+    return {
+        state   = STATES.UNKNOWN,
+        questID = questID,
+        title   = q and q.label or nil,
+    }
+end
+
+-- ==========================================================================
+-- Live: single-quest follower (legacy API)
+-- ==========================================================================
 
 local state = {
     questID        = nil,
@@ -46,10 +229,13 @@ local state = {
     x              = nil,
     y              = nil,
     source         = nil,
+    -- Phase 3A: also expose the engine state name for any consumer that
+    -- wants to know "is this NOT_IN_LOG vs OBJECTIVE vs READY_TO_TURNIN".
+    engineState    = nil,
 }
 
-local subs    = {}    -- set of subscriber functions
-local lastSig = ""    -- last fired signature, for change-detection
+local subs    = {}
+local lastSig = ""
 
 local function notify()
     for fn in pairs(subs) do
@@ -59,8 +245,9 @@ local function notify()
 end
 
 local function signature()
-    return string.format("%s|%s|%s|%s|%s|%s",
+    return string.format("%s|%s|%s|%s|%s|%s|%s",
         tostring(state.questID),
+        tostring(state.engineState),
         tostring(state.objectiveIndex),
         tostring(state.isComplete),
         tostring(state.mapID),
@@ -68,18 +255,15 @@ local function signature()
         tostring(state.y))
 end
 
-local function clearState()
+local function clearLive()
     state.questID        = nil
     state.questTitle     = nil
     state.objectiveIndex = nil
     state.objectiveText  = nil
     state.isComplete     = false
     state.mapID, state.x, state.y, state.source = nil, nil, nil, nil
+    state.engineState    = nil
 end
-
--- --------------------------------------------------------------------------
--- Public API
--- --------------------------------------------------------------------------
 
 function Follower.Get() return state end
 
@@ -102,7 +286,7 @@ end
 
 function Follower.Clear()
     if state.questID == nil then return end
-    clearState()
+    clearLive()
     lastSig = ""
     notify()
 end
@@ -110,57 +294,38 @@ end
 function Follower.Refresh()
     if not state.questID then return end
 
-    -- Quest no longer in the log? Drop it.
-    if C_QuestLog and C_QuestLog.IsOnQuest
-        and not C_QuestLog.IsOnQuest(state.questID) then
+    local computed = Follower.ComputeState(state.questID)
+
+    -- Engine says quest is done / unknown / abandoned -> clear the live
+    -- single-quest follower. (DONE here means turned in, which matches
+    -- the legacy "QUEST_TURNED_IN" auto-clear behavior.)
+    if computed.state == STATES.DONE
+       or computed.state == STATES.UNKNOWN
+       or computed.state == STATES.ABANDONED then
         Follower.Clear()
         return
     end
 
-    -- Title (best effort; may be nil during a cold cache moment).
-    if C_QuestLog and C_QuestLog.GetTitleForQuestID then
-        local t = C_QuestLog.GetTitleForQuestID(state.questID)
-        if t and t ~= "" then state.questTitle = t end
+    -- NOT_IN_LOG: the legacy follower expected the quest to be in log. Keep
+    -- legacy behavior (clear) so existing callers don't get surprised. The
+    -- planner uses ComputeState directly and handles NOT_IN_LOG itself.
+    if computed.state == STATES.NOT_IN_LOG then
+        Follower.Clear()
+        return
     end
 
-    -- Complete? Look at objectives next; otherwise pick next unfinished.
-    state.isComplete = (C_QuestLog and C_QuestLog.IsComplete
-        and C_QuestLog.IsComplete(state.questID)) or false
-
-    local Locator = ns.Locator
-
-    if state.isComplete then
-        state.objectiveIndex = nil
-        state.objectiveText  = "Return to turn-in"
-        if Locator and Locator.ResolveTurnIn then
-            state.mapID, state.x, state.y, state.source =
-                Locator.ResolveTurnIn(state.questID)
-        end
-    else
-        local objectives = (C_QuestLog and C_QuestLog.GetQuestObjectives
-            and C_QuestLog.GetQuestObjectives(state.questID)) or {}
-        local idx, obj
-        for i, o in ipairs(objectives) do
-            if not o.finished then idx, obj = i, o; break end
-        end
-        if idx then
-            state.objectiveIndex = idx
-            state.objectiveText  = obj.text or ""
-            if Locator and Locator.ResolveObjective then
-                state.mapID, state.x, state.y, state.source =
-                    Locator.ResolveObjective(state.questID, idx)
-            end
-        else
-            -- All objectives report finished but IsComplete didn't say so.
-            -- Treat as "almost there"; aim at the turn-in.
-            state.objectiveIndex = nil
-            state.objectiveText  = "Almost done..."
-            if Locator and Locator.ResolveTurnIn then
-                state.mapID, state.x, state.y, state.source =
-                    Locator.ResolveTurnIn(state.questID)
-            end
-        end
-    end
+    -- OBJECTIVE or READY_TO_TURNIN: copy fields into live state.
+    state.questTitle     = computed.title
+    state.objectiveIndex = computed.objectiveIndex
+    state.objectiveText  = computed.objectiveText
+        or (computed.state == STATES.READY_TO_TURNIN
+            and "Return to turn-in" or nil)
+    state.isComplete     = (computed.state == STATES.READY_TO_TURNIN)
+    state.mapID          = computed.mapID
+    state.x              = computed.x
+    state.y              = computed.y
+    state.source         = computed.source
+    state.engineState    = computed.state
 
     local sig = signature()
     if sig ~= lastSig then
@@ -169,9 +334,9 @@ function Follower.Refresh()
     end
 end
 
--- --------------------------------------------------------------------------
+-- ==========================================================================
 -- Event wiring (skipped under Lupa where Cairn.Events is absent).
--- --------------------------------------------------------------------------
+-- ==========================================================================
 
 if Cairn and Cairn.Events then
     local owner = "Vellum.Follower"

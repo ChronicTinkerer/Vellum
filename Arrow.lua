@@ -47,11 +47,32 @@ local MUTED_SOURCES = {
     ["codex-zone"] = true,
 }
 
--- Stable Blizzard texture paths. These have shipped since classic and won't
--- vanish on a patch.
-local RING_TEXTURE    = "Interface\\Minimap\\MiniMap-TrackingBorder"
-local POINTER_TEXTURE = "Interface\\Minimap\\MinimapArrow"
-local CIRCLE_MASK     = "Interface\\CharacterFrame\\TempPortraitAlphaMask"
+-- Stable Blizzard texture paths.
+local CIRCLE_MASK = "Interface\\CharacterFrame\\TempPortraitAlphaMask"
+
+-- Bundled Material Symbols glyphs, rendered to 128x128 RGBA TGAs at design
+-- time. White pixels on transparent background so SetVertexColor tints them
+-- any color we want.
+--
+--   arrow_pointer = Material "navigation" (filled). Triangular paper-plane
+--                   shape, the canonical "you are facing this way" compass
+--                   needle. Replaces a previous Material "arrow_shape_up"
+--                   bake which read more as "stylized house."
+--   ring          = Material "circle" (outlined, default variant). A clean
+--                   centered ring outline. Replaces Blizzard's
+--                   MiniMap-TrackingBorder which had calendar/tracking
+--                   notches baked in and looked off-center when used as a
+--                   plain ring.
+--
+-- Both have Blizzard fallbacks for the (rare) case the asset folder didn't
+-- ship -- the addon stays usable, just visually less branded.
+local POINTER_TEXTURE          = "Interface\\AddOns\\Vellum\\Assets\\arrow_pointer"
+local POINTER_TEXTURE_FALLBACK = "Interface\\Minimap\\MinimapArrow"
+local RING_TEXTURE             = "Interface\\AddOns\\Vellum\\Assets\\ring"
+local RING_TEXTURE_FALLBACK    = "Interface\\Common\\common-iconframe"
+
+-- Brass tint for the ring. Warm gold so it reads as "metal frame."
+local RING_TINT = { 0.90, 0.70, 0.25, 1 }
 
 -- ==========================================================================
 -- Math helpers
@@ -175,18 +196,29 @@ local function buildFrame()
         if okMask then frame.disc:AddMaskTexture(mask) end
     end
 
-    -- Layer 2: brass ring (the same border that frames your minimap).
-    -- Sized slightly larger than the disc so it overlaps the edge cleanly.
+    -- Layer 2: brass ring. Bundled Material Symbols "circle" outline,
+    -- tinted brass via SetVertexColor. Sized to the full frame so the
+    -- ring traces the disc's edge.
     frame.ring = frame:CreateTexture(nil, "BORDER")
-    frame.ring:SetPoint("TOPLEFT", frame, "TOPLEFT", -8, 8)
-    frame.ring:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", 8, -8)
+    frame.ring:SetAllPoints(frame)
     pcall(frame.ring.SetTexture, frame.ring, RING_TEXTURE)
+    if not (frame.ring:GetTexture() and frame.ring:GetTexture() ~= "") then
+        pcall(frame.ring.SetTexture, frame.ring, RING_TEXTURE_FALLBACK)
+    end
+    frame.ring:SetVertexColor(
+        RING_TINT[1], RING_TINT[2], RING_TINT[3], RING_TINT[4])
 
-    -- Layer 3: rotating chevron (Blizzard's player-arrow texture).
+    -- Layer 3: rotating compass needle (Material Symbols "navigation"
+    -- filled, bundled at Vellum/Assets/arrow_pointer.tga).
     frame.pointer = frame:CreateTexture(nil, "ARTWORK")
     frame.pointer:SetSize(DEFAULT_SIZE * 0.55, DEFAULT_SIZE * 0.55)
     frame.pointer:SetPoint("CENTER", frame, "CENTER", 0, 0)
     pcall(frame.pointer.SetTexture, frame.pointer, POINTER_TEXTURE)
+    -- If the bundled asset failed to load, the texture's GetTexture is nil
+    -- (or empty); fall back to Blizzard's stable MinimapArrow path.
+    if not (frame.pointer:GetTexture() and frame.pointer:GetTexture() ~= "") then
+        pcall(frame.pointer.SetTexture, frame.pointer, POINTER_TEXTURE_FALLBACK)
+    end
     frame.pointer:SetVertexColor(0.55, 0.13, 0.16)
 
     -- Layer 4: tiny ink dot at the pivot. Small enough that the chevron's
@@ -334,19 +366,48 @@ function Arrow.IsShown()
 end
 
 -- ==========================================================================
--- Auto-wire to Follower
+-- Auto-wire to RoutePlanner (Phase 3C)
+-- The arrow now points at route[1] of the planner's current route. Empty
+-- route -> arrow hides. The planner debounces its own recalc bus so we
+-- just react to OnRouteChanged here.
+--
+-- Legacy single-quest Follower.OnChange wire is intentionally removed:
+-- /vellum follow X still mutates Follower.state but doesn't drive the
+-- arrow anymore. The planner sees the same world state and picks the
+-- best next waypoint across all candidates. To force a specific quest as
+-- next, a future "pin" feature will inject it at the head of the route.
 -- ==========================================================================
 
-if ns.Follower and ns.Follower.OnChange then
-    ns.Follower.OnChange(function(state)
-        if state and state.questID and state.mapID and state.x and state.y then
-            local label = state.questTitle or "Quest"
-            if state.objectiveText and state.objectiveText ~= "" then
-                label = label .. "  -  " .. state.objectiveText
-            end
-            Arrow.Track(state.mapID, state.x, state.y, label, state.source)
-        else
-            Arrow.Stop()
-        end
-    end)
+local function trackHead(route)
+    if not route or #route == 0 then
+        Arrow.Stop()
+        return
+    end
+    local wp = route[1]
+    if not (wp and wp.mapID and wp.x and wp.y) then
+        Arrow.Stop()
+        return
+    end
+
+    -- Build a label that's compact enough to fit under the disc but still
+    -- communicates the action. Format: "<type>: <title> -- <objText>".
+    local title = wp.title or ("Quest " .. tostring(wp.questID))
+    local label = title
+    if wp.type == "PICKUP" then
+        label = "Pick up: " .. title
+    elseif wp.type == "TURNIN" then
+        label = "Turn in: " .. title
+    elseif wp.type == "OBJECTIVE" and wp.objText and wp.objText ~= "" then
+        label = title .. "  -  " .. wp.objText
+    end
+
+    Arrow.Track(wp.mapID, wp.x, wp.y, label, wp.source)
+end
+
+if ns.RoutePlanner and ns.RoutePlanner.OnRouteChanged then
+    ns.RoutePlanner.OnRouteChanged(trackHead)
+
+    -- Seed the arrow on login (planner already subscribes to
+    -- PLAYER_ENTERING_WORLD so it'll Recompute; the resulting OnRouteChanged
+    -- will fire trackHead for the initial state).
 end

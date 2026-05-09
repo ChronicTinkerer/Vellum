@@ -47,6 +47,82 @@ local function codexQuestEntry(questID)
     return mod:Get(questID)
 end
 
+-- ----------------------------------------------------------------------------
+-- LibCodex Quests entries from BUNDLED rows store coords as a list of
+-- { mapID, x, y, npcID, point } records under entry.locations -- not as
+-- flat mapID/x/y fields. Only RUNTIME-added entries (via AddFromAPI) have
+-- the flat shape. So a baked entry like quest 28763 has:
+--
+--   entry.locations = {
+--     { mapID=12,   x=0.480, y=0.420, npcID=197,   point="start" },
+--     { mapID=12,   x=0.480, y=0.420, npcID=197,   point="end"   },
+--     { mapID=12,   x=0.474, y=0.400, npcID=49871, point="requirement" },
+--     { mapID=6170, x=0.332, y=0.532, npcID=197,   point="start" },
+--     { mapID=6170, x=0.332, y=0.532, npcID=197,   point="end"   },
+--     { mapID=6170, x=0.316, y=0.466, npcID=49871, point="requirement" },
+--   }
+--
+-- These helpers walk the locations list and pick the right entry by `point`
+-- type. Quests are sometimes duplicated across map variants (mapID=12 for
+-- the original Elwynn Forest, mapID=6170 for the Cataclysm-revamped
+-- version); we prefer entries matching the player's current zone, falling
+-- back to the first matching point if no zone match is available.
+-- ----------------------------------------------------------------------------
+
+local function playerCurrentMapID()
+    if not (C_Map and C_Map.GetBestMapForUnit) then return nil end
+    return C_Map.GetBestMapForUnit("player")
+end
+
+-- Find a location entry matching `pointType` ("start" / "end" / "requirement").
+-- Prefers the player's current mapID. Returns mapID, x, y or nil.
+local function pickLocationByPoint(locations, pointType)
+    if type(locations) ~= "table" then return nil end
+    local pmap = playerCurrentMapID()
+
+    -- First pass: matching pointType + matching player mapID.
+    if pmap then
+        for _, loc in ipairs(locations) do
+            if loc.point == pointType
+               and loc.mapID == pmap
+               and loc.x and loc.y then
+                return loc.mapID, loc.x, loc.y
+            end
+        end
+    end
+
+    -- Second pass: matching pointType, any map.
+    for _, loc in ipairs(locations) do
+        if loc.point == pointType
+           and loc.mapID and loc.x and loc.y then
+            return loc.mapID, loc.x, loc.y
+        end
+    end
+
+    return nil
+end
+
+local function codexGiverFromLocations(questID)
+    local q = codexQuestEntry(questID)
+    if not q then return nil end
+    return pickLocationByPoint(q.locations, "start")
+end
+
+local function codexTurnInFromLocations(questID)
+    local q = codexQuestEntry(questID)
+    if not q then return nil end
+    return pickLocationByPoint(q.locations, "end")
+end
+
+-- Objectives come from "requirement" (or "sourcerequirement") points.
+local function codexObjectiveFromLocations(questID)
+    local q = codexQuestEntry(questID)
+    if not q then return nil end
+    local m, x, y = pickLocationByPoint(q.locations, "requirement")
+    if m then return m, x, y end
+    return pickLocationByPoint(q.locations, "sourcerequirement")
+end
+
 local function npcFirstLoc(npc)
     if not (npc and npc.locations and npc.locations[1]) then return nil end
     local loc = npc.locations[1]
@@ -170,10 +246,27 @@ end
 -- ==========================================================================
 
 local function questZoneFallback(questID)
-    if not (C_QuestLog and C_QuestLog.GetQuestUiMapID) then return nil end
-    local mapID = C_QuestLog.GetQuestUiMapID(questID)
-    if not (mapID and mapID > 0) then return nil end
-    return mapID, 0.5, 0.5
+    -- Layer A: Blizzard's mapID for this quest (best when populated, but
+    -- often returns nil for freshly accepted quests until C_QuestLog syncs).
+    if C_QuestLog and C_QuestLog.GetQuestUiMapID then
+        local mapID = C_QuestLog.GetQuestUiMapID(questID)
+        if mapID and mapID > 0 then
+            return mapID, 0.5, 0.5
+        end
+    end
+    -- Layer B: catalog's mapID. Bundled rows store no flat q.mapID, but
+    -- they have q.locations[].mapID -- pick the first known mapID. (The
+    -- flat q.mapID branch handles runtime-added entries.)
+    local q = codexQuestEntry(questID)
+    if q then
+        if type(q.locations) == "table" then
+            for _, loc in ipairs(q.locations) do
+                if loc.mapID then return loc.mapID, 0.5, 0.5 end
+            end
+        end
+        if q.mapID then return q.mapID, 0.5, 0.5 end
+    end
+    return nil
 end
 
 -- ==========================================================================
@@ -194,10 +287,21 @@ function Locator.ResolveObjective(questID, objectiveIndex)
     m, x, y = codexNPCByObjectiveText(questID, objectiveIndex)
     if m then return m, x, y, "codex-npc" end
 
-    local q = codexQuestEntry(questID)
-    if q and q.mapID and q.x and q.y then
-        return q.mapID, q.x, q.y, "codex-giver"
-    end
+    -- LibCodex bundled rows store objective targets as `point="requirement"`
+    -- entries in the locations list. This was previously unreachable by the
+    -- Locator because the resolver checked flat q.mapID/x/y fields that
+    -- only exist on runtime-added entries. Quest 28763 ("Beating Them
+    -- Back!") is a representative example: it has full requirement coords
+    -- but Vellum couldn't see them.
+    m, x, y = codexObjectiveFromLocations(questID)
+    if m then return m, x, y, "codex-locations" end
+
+    -- NB: NO codex-giver fallback here. The giver is where you ACCEPTED
+    -- the quest, not where the objective is. Falling back to giver coords
+    -- after accept makes the arrow point at the NPC you just walked away
+    -- from (the "arrow stuck on quest giver" bug fixed 2026-05-08). The
+    -- giver fallback is appropriate for ResolveTurnIn when the quest's
+    -- turn-in is at the giver (short quests), not for objectives.
 
     m, x, y = questZoneFallback(questID)
     if m then return m, x, y, "codex-zone" end
@@ -225,6 +329,19 @@ function Locator.ResolveTurnIn(questID)
     m, x, y = codexNPCByAnyObjective(questID)
     if m then return m, x, y, "codex-npc" end
 
+    -- LibCodex bundled rows: locations list entry with point="end" is the
+    -- turn-in NPC location. Same data as turnInNPC -> codex-turnin layer
+    -- above but reads coords directly from the row instead of doing an
+    -- NPC-table lookup, so it works even if LibCodex NPCs is missing or
+    -- doesn't carry that NPC.
+    m, x, y = codexTurnInFromLocations(questID)
+    if m then return m, x, y, "codex-locations-end" end
+
+    -- Last-resort: giver location (short quests turn in at the giver). On
+    -- bundled rows this is locations[].point="start"; on runtime entries
+    -- it's the flat q.mapID/x/y.
+    m, x, y = codexGiverFromLocations(questID)
+    if m then return m, x, y, "codex-locations-start" end
     if q and q.mapID and q.x and q.y then
         return q.mapID, q.x, q.y, "codex-giver"
     end

@@ -19,5 +19,9 @@
 Core.lua
 Locator.lua
 Follower.lua
+Waypoint.lua
+RoutePlanner.lua
 Arrow.lua
-Panel.lua
+HomeData.lua
+HomeWindow.lua
+StepWindow.lua
