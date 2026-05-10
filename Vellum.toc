@@ -7,7 +7,7 @@
 ## Dependencies: LibCodex-1.0, Cairn
 ## OptionalDeps: TomTom
 ## X-Category: Quest
-## X-License: All Rights Reserved
+## X-License: GPL-2.0-or-later
 ## X-Website: https://github.com/ChronicTinkerer/Vellum
 # Distribution project IDs -- fill in once Vellum is registered on each site.
 # Without these the BigWigs packager skips that site silently (CF/WoWI/Wago
